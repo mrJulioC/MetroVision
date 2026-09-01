@@ -1,5 +1,9 @@
 # MetroVision
 
+## MetroVision 3.0 — IA local
+
+La selección precisa de objetos usa MediaPipe MagicTouch directamente en el teléfono. El modelo se incluye dentro del APK: las imágenes no se envían a servidores. El contorno obtenido se combina con profundidad ARCore y los parámetros ópticos de la cámara para calcular medidas; el GPS se reserva para recorridos exteriores.
+
 Metro y medidor de áreas para Android con realidad aumentada, calibración y recorrido GPS.
 
 ## Modos
@@ -12,6 +16,9 @@ Metro y medidor de áreas para Android con realidad aumentada, calibración y re
 - Unidades seleccionables: metros, centímetros, pies y pulgadas.
 - Interfaz de cámara compacta con guía de proximidad.
 - Calibración persistente aplicada a todas las mediciones por cámara.
+- Detección automática de objetos mediante ML Kit.
+- Estimación del ancho combinando profundidad AR y óptica de cámara.
+- Validación de calibración y restablecimiento desde la pantalla principal.
 
 ## Construcción
 

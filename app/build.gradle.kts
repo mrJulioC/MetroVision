@@ -11,8 +11,8 @@ android {
         applicationId = "com.solumetals.metrovision"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 6
+        versionName = "3.0.0"
     }
     buildFeatures { compose = true }
 }
@@ -26,5 +26,7 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.2")
     implementation("io.github.sceneview:arsceneview:4.32.0")
+    implementation("com.google.mlkit:object-detection:17.0.2")
+    implementation("com.google.mediapipe:tasks-vision:latest.release")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

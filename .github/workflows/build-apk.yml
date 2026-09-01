@@ -18,8 +18,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.1.0'
+      - name: Descargar IA local MagicTouch
+        run: |
+          mkdir -p app/src/main/assets
+          curl --fail --location --retry 3 \
+            --output app/src/main/assets/interactive_segmentation.task \
+            https://storage.googleapis.com/mediapipe-models/interactive_segmenter_v2/magic_touch/int8/latest/interactive_segmentation.task
       - run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
-          name: MetroVision-v1.1.0
+          name: MetroVision-v3.0.0
           path: app/build/outputs/apk/debug/app-debug.apk

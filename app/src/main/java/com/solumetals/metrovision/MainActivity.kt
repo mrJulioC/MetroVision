@@ -25,11 +25,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.google.ar.core.Frame
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.objects.ObjectDetection
+import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import io.github.sceneview.ar.ARSceneView
 import java.util.Locale
 
@@ -40,7 +44,7 @@ private val Slate = Color(0xFF52615E)
 
 enum class Page { HOME, CAMERA, GPS }
 enum class MeasureMode(val title: String) {
-    DISTANCE("Distancia"), RECTANGLE("Rectángulo"), AREA("Área libre"), CALIBRATE("Calibrar")
+    DISTANCE("Distancia"), OBJECT("Objeto automático"), RECTANGLE("Rectángulo"), AREA("Área libre"), CALIBRATE("Calibrar")
 }
 enum class MeasureUnit(val label: String, val short: String) {
     METERS("Metros", "m"), CENTIMETERS("Centímetros", "cm"), FEET("Pies", "ft"), INCHES("Pulgadas", "in")
@@ -78,9 +82,13 @@ class MainActivity : ComponentActivity() {
     var page by remember { mutableStateOf(Page.HOME) }
     var mode by remember { mutableStateOf(MeasureMode.DISTANCE) }
     var unit by remember { mutableStateOf(MeasureUnit.METERS) }
-    var correction by remember { mutableDoubleStateOf(preferences.getFloat("camera_correction", 1f).toDouble()) }
+    val savedCorrection = preferences.getFloat("camera_correction", 1f).toDouble()
+    var correction by remember { mutableDoubleStateOf(if (savedCorrection in .5..2.0) savedCorrection else 1.0) }
     when (page) {
-        Page.HOME -> Home(unit, { unit = it }, correction, onCamera = { mode = it; page = Page.CAMERA }, onGps = { page = Page.GPS })
+        Page.HOME -> Home(unit, { unit = it }, correction, {
+            correction = 1.0
+            preferences.edit().remove("camera_correction").apply()
+        }, onCamera = { mode = it; page = Page.CAMERA }, onGps = { page = Page.GPS })
         Page.CAMERA -> CameraMeasure(mode, unit, { unit = it }, correction, {
             correction = it
             preferences.edit().putFloat("camera_correction", it.toFloat()).apply()
@@ -89,11 +97,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun Home(unit: MeasureUnit, unitChange: (MeasureUnit)->Unit, correction: Double, onCamera: (MeasureMode) -> Unit, onGps: () -> Unit) {
+@Composable private fun Home(unit: MeasureUnit, unitChange: (MeasureUnit)->Unit, correction: Double, resetCalibration: () -> Unit, onCamera: (MeasureMode) -> Unit, onGps: () -> Unit) {
     Column(Modifier.fillMaxSize().background(Fog).padding(22.dp).verticalScroll(rememberScrollState())) {
         Spacer(Modifier.height(28.dp))
-        Text("MetroVision", fontSize = 31.sp, fontWeight = FontWeight.Bold, color = Ink)
-        Text("Mide espacios, objetos y recorridos", color = Color(0xFF61706C))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Image(painterResource(com.solumetals.metrovision.R.drawable.metrovision_icon_source), "MetroVision", Modifier.size(62.dp))
+            Spacer(Modifier.width(14.dp))
+            Column {
+                Text("MetroVision", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Ink)
+                Text("Medición inteligente", color = Slate, fontSize = 13.sp)
+            }
+        }
         Spacer(Modifier.height(18.dp)); UnitSelector(unit, unitChange)
         if (correction != 1.0) {
             Spacer(Modifier.height(10.dp))
@@ -101,9 +115,11 @@ class MainActivity : ComponentActivity() {
         }
         Spacer(Modifier.height(30.dp))
         FeatureCard(Icons.Outlined.Straighten, "Distancia", "Marca los puntos A y B", Mint) { onCamera(MeasureMode.DISTANCE) }
+        FeatureCard(Icons.Outlined.CenterFocusStrong, "Objeto automático", "Detecta el objeto y estima su ancho", Color(0xFF38BDF8)) { onCamera(MeasureMode.OBJECT) }
         FeatureCard(Icons.Outlined.CropSquare, "Pared o rectángulo", "Ancho, alto, área y perímetro", Color(0xFF7BA6FF)) { onCamera(MeasureMode.RECTANGLE) }
         FeatureCard(Icons.Outlined.Pentagon, "Área libre", "Marca todos los vértices", Color(0xFFFFB45B)) { onCamera(MeasureMode.AREA) }
         FeatureCard(Icons.Outlined.Tune, "Calibración", "Corrige usando una medida conocida", Color(0xFFA98BFF)) { onCamera(MeasureMode.CALIBRATE) }
+        if (correction != 1.0) TextButton(onClick = resetCalibration, modifier = Modifier.align(Alignment.End)) { Text("Restablecer calibración") }
         FeatureCard(Icons.Outlined.Route, "Recorrido GPS", "Camina desde A hasta B", Color(0xFFFF718B), onGps)
         Spacer(Modifier.height(18.dp))
         Text("Las medidas de cámara son estimaciones. Para cortes o instalaciones críticas, confirma con una cinta o metro láser.", fontSize = 12.sp, color = Color(0xFF71807C))
@@ -130,6 +146,21 @@ class MainActivity : ComponentActivity() {
     var knownText by remember { mutableStateOf(if (unit == MeasureUnit.CENTIMETERS) "50" else "0.50") }
     var message by remember { mutableStateOf("Mueve lentamente el teléfono para detectar la superficie") }
     var proximityMeters by remember { mutableStateOf<Double?>(null) }
+    var detectedWidthPx by remember { mutableStateOf<Double?>(null) }
+    var detectorFocalPx by remember { mutableStateOf<Double?>(null) }
+    var detectedLabel by remember { mutableStateOf("Buscando objeto") }
+    var detectorBusy by remember { mutableStateOf(false) }
+    var detectorFrame by remember { mutableIntStateOf(0) }
+    val objectDetector = remember {
+        ObjectDetection.getClient(
+            ObjectDetectorOptions.Builder()
+                .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
+                .enableClassification()
+                .enableMultipleObjects()
+                .build()
+        )
+    }
+    DisposableEffect(objectDetector) { onDispose { objectDetector.close() } }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
         if (permission) ARSceneView(Modifier.fillMaxSize(), planeRenderer = true, onSessionUpdated = { _, f ->
@@ -138,6 +169,24 @@ class MainActivity : ComponentActivity() {
             val hit = f.hitTest(display.widthPixels / 2f, display.heightPixels / 2f)
                 .firstOrNull { it.trackable.trackingState == com.google.ar.core.TrackingState.TRACKING }
             proximityMeters = hit?.let { distance(f.camera.pose.point(), it.hitPose.point()) }
+            if (mode == MeasureMode.OBJECT && !detectorBusy && detectorFrame++ % 12 == 0) {
+                try {
+                    val cameraImage = f.acquireCameraImage()
+                    val focal = f.camera.imageIntrinsics.focalLength[1].toDouble()
+                    detectorBusy = true
+                    objectDetector.process(InputImage.fromMediaImage(cameraImage, 90))
+                        .addOnSuccessListener { objects ->
+                            val found = objects.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                            detectedWidthPx = found?.boundingBox?.width()?.toDouble()
+                            detectorFocalPx = focal
+                            detectedLabel = found?.labels?.maxByOrNull { it.confidence }?.text ?: if (found != null) "Objeto detectado" else "Buscando objeto"
+                        }
+                        .addOnCompleteListener {
+                            cameraImage.close()
+                            detectorBusy = false
+                        }
+                } catch (_: com.google.ar.core.exceptions.NotYetAvailableException) { }
+            }
         })
         else Text("Se necesita permiso de cámara", color = Color.White, modifier = Modifier.align(Alignment.Center))
         Crosshair()
@@ -146,12 +195,15 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.width(8.dp)); Surface(color = Ink.copy(alpha=.72f), shape = RoundedCornerShape(18.dp)) { Text(mode.title, color = Color.White, modifier = Modifier.padding(horizontal=15.dp, vertical=10.dp), fontWeight = FontWeight.SemiBold) }
         }
         Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(14.dp)) {
-            ResultPanel(mode, points, correction, unit, knownText, { knownText = it }, proximityMeters, onApplyCalibration = {
+            ResultPanel(mode, points, correction, unit, knownText, { knownText = it }, proximityMeters, detectedWidthPx, detectorFocalPx, detectedLabel, onApplyCalibration = {
                 val known = knownText.replace(',', '.').toDoubleOrNull()
                 if (known != null && known > 0 && points.size >= 2) {
                     val knownMeters = toMeters(known, unit)
-                    correctionChange(knownMeters / distance(points[0], points[1]))
-                    message = "Calibración guardada"
+                    val factor = knownMeters / distance(points[0], points[1])
+                    if (factor in .5..2.0) {
+                        correctionChange(factor)
+                        message = "Calibración guardada"
+                    } else message = "Calibración rechazada: repite los puntos"
                 }
             })
             Spacer(Modifier.height(10.dp))
@@ -186,7 +238,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun ResultPanel(mode: MeasureMode, points: List<Point3>, correction: Double, unit: MeasureUnit, knownText: String, knownChange: (String)->Unit, proximityMeters: Double?, onApplyCalibration: ()->Unit) {
+@Composable private fun ResultPanel(mode: MeasureMode, points: List<Point3>, correction: Double, unit: MeasureUnit, knownText: String, knownChange: (String)->Unit, proximityMeters: Double?, detectedWidthPx: Double?, detectorFocalPx: Double?, detectedLabel: String, onApplyCalibration: ()->Unit) {
     Surface(color = Color.White.copy(alpha=.96f), shape = RoundedCornerShape(24.dp), shadowElevation = 5.dp) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -196,6 +248,15 @@ class MainActivity : ComponentActivity() {
             }
             when (mode) {
                 MeasureMode.DISTANCE -> BigValue(if(points.size<1) "Marca el punto A" else if(points.size<2) "Marca el punto B" else formatLength(distance(points[0], points[1]) * correction, unit))
+                MeasureMode.OBJECT -> {
+                    val depth = proximityMeters
+                    val width = detectedWidthPx
+                    val focal = detectorFocalPx
+                    val estimate = if (depth != null && width != null && focal != null && focal > 0) width * depth / focal * correction else null
+                    BigValue(estimate?.let { formatLength(it, unit) } ?: "Detectando…")
+                    Text(detectedLabel, color = Slate, fontSize = 12.sp)
+                    Text("Estimación por profundidad + óptica", color = Color.Gray, fontSize = 11.sp)
+                }
                 MeasureMode.RECTANGLE -> if(points.size<2) BigValue("Marca la esquina opuesta") else {
                     val (w,h,a)=rectangleMetrics(points[0],points[1]); BigValue(formatArea(a*correction*correction, unit)); Text("Ancho ${formatLength(w*correction,unit)}  ·  Alto ${formatLength(h*correction,unit)}", color=Color.Gray)
                 }
