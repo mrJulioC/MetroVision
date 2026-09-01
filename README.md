@@ -10,6 +10,8 @@ Metro y medidor de áreas para Android con realidad aumentada, calibración y re
 - Calibración con una distancia real conocida.
 - Recorrido GPS A–B con distancia acumulada y precisión de señal.
 - Unidades seleccionables: metros, centímetros, pies y pulgadas.
+- Interfaz de cámara compacta con guía de proximidad.
+- Calibración persistente aplicada a todas las mediciones por cámara.
 
 ## Construcción
 

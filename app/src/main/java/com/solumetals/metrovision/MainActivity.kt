@@ -35,7 +35,8 @@ import java.util.Locale
 
 private val Ink = Color(0xFF071815)
 private val Mint = Color(0xFF00D8B4)
-private val Fog = Color(0xFFF2F7F5)
+private val Fog = Color(0xFFF5F7F6)
+private val Slate = Color(0xFF52615E)
 
 enum class Page { HOME, CAMERA, GPS }
 enum class MeasureMode(val title: String) {
@@ -53,26 +54,51 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun MetroTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = lightColorScheme(primary = Ink, secondary = Mint, background = Fog), content = content)
+    MaterialTheme(
+        colorScheme = lightColorScheme(
+            primary = Ink,
+            secondary = Mint,
+            background = Fog,
+            surface = Color.White,
+            onSurface = Ink
+        ),
+        shapes = Shapes(
+            extraSmall = RoundedCornerShape(10.dp),
+            small = RoundedCornerShape(14.dp),
+            medium = RoundedCornerShape(20.dp),
+            large = RoundedCornerShape(28.dp)
+        ),
+        content = content
+    )
 }
 
 @Composable private fun MetroApp() {
+    val context = LocalContext.current
+    val preferences = remember { context.getSharedPreferences("metrovision", android.content.Context.MODE_PRIVATE) }
     var page by remember { mutableStateOf(Page.HOME) }
     var mode by remember { mutableStateOf(MeasureMode.DISTANCE) }
     var unit by remember { mutableStateOf(MeasureUnit.METERS) }
+    var correction by remember { mutableDoubleStateOf(preferences.getFloat("camera_correction", 1f).toDouble()) }
     when (page) {
-        Page.HOME -> Home(unit, { unit = it }, onCamera = { mode = it; page = Page.CAMERA }, onGps = { page = Page.GPS })
-        Page.CAMERA -> CameraMeasure(mode, unit, { unit = it }, onBack = { page = Page.HOME })
+        Page.HOME -> Home(unit, { unit = it }, correction, onCamera = { mode = it; page = Page.CAMERA }, onGps = { page = Page.GPS })
+        Page.CAMERA -> CameraMeasure(mode, unit, { unit = it }, correction, {
+            correction = it
+            preferences.edit().putFloat("camera_correction", it.toFloat()).apply()
+        }, onBack = { page = Page.HOME })
         Page.GPS -> GpsMeasure(unit, { unit = it }, onBack = { page = Page.HOME })
     }
 }
 
-@Composable private fun Home(unit: MeasureUnit, unitChange: (MeasureUnit)->Unit, onCamera: (MeasureMode) -> Unit, onGps: () -> Unit) {
+@Composable private fun Home(unit: MeasureUnit, unitChange: (MeasureUnit)->Unit, correction: Double, onCamera: (MeasureMode) -> Unit, onGps: () -> Unit) {
     Column(Modifier.fillMaxSize().background(Fog).padding(22.dp).verticalScroll(rememberScrollState())) {
         Spacer(Modifier.height(28.dp))
         Text("MetroVision", fontSize = 31.sp, fontWeight = FontWeight.Bold, color = Ink)
         Text("Mide espacios, objetos y recorridos", color = Color(0xFF61706C))
         Spacer(Modifier.height(18.dp)); UnitSelector(unit, unitChange)
+        if (correction != 1.0) {
+            Spacer(Modifier.height(10.dp))
+            Text("Cámara calibrada · factor %.3f".format(correction), fontSize = 12.sp, color = Slate)
+        }
         Spacer(Modifier.height(30.dp))
         FeatureCard(Icons.Outlined.Straighten, "Distancia", "Marca los puntos A y B", Mint) { onCamera(MeasureMode.DISTANCE) }
         FeatureCard(Icons.Outlined.CropSquare, "Pared o rectángulo", "Ancho, alto, área y perímetro", Color(0xFF7BA6FF)) { onCamera(MeasureMode.RECTANGLE) }
@@ -94,19 +120,25 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun CameraMeasure(mode: MeasureMode, unit: MeasureUnit, unitChange: (MeasureUnit)->Unit, onBack: () -> Unit) {
+@Composable private fun CameraMeasure(mode: MeasureMode, unit: MeasureUnit, unitChange: (MeasureUnit)->Unit, correction: Double, correctionChange: (Double)->Unit, onBack: () -> Unit) {
     val context = LocalContext.current
     var permission by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { permission = it }
     LaunchedEffect(Unit) { if (!permission) launcher.launch(Manifest.permission.CAMERA) }
     var frame by remember { mutableStateOf<Frame?>(null) }
     var points by remember { mutableStateOf(listOf<Point3>()) }
-    var correction by remember { mutableDoubleStateOf(1.0) }
-    var knownText by remember { mutableStateOf("1.00") }
+    var knownText by remember { mutableStateOf(if (unit == MeasureUnit.CENTIMETERS) "50" else "0.50") }
     var message by remember { mutableStateOf("Mueve lentamente el teléfono para detectar la superficie") }
+    var proximityMeters by remember { mutableStateOf<Double?>(null) }
 
     Box(Modifier.fillMaxSize().background(Ink)) {
-        if (permission) ARSceneView(Modifier.fillMaxSize(), planeRenderer = true, onSessionUpdated = { _, f -> frame = f })
+        if (permission) ARSceneView(Modifier.fillMaxSize(), planeRenderer = true, onSessionUpdated = { _, f ->
+            frame = f
+            val display = context.resources.displayMetrics
+            val hit = f.hitTest(display.widthPixels / 2f, display.heightPixels / 2f)
+                .firstOrNull { it.trackable.trackingState == com.google.ar.core.TrackingState.TRACKING }
+            proximityMeters = hit?.let { distance(f.camera.pose.point(), it.hitPose.point()) }
+        })
         else Text("Se necesita permiso de cámara", color = Color.White, modifier = Modifier.align(Alignment.Center))
         Crosshair()
         Row(Modifier.statusBarsPadding().padding(12.dp).align(Alignment.TopStart), verticalAlignment = Alignment.CenterVertically) {
@@ -114,18 +146,24 @@ class MainActivity : ComponentActivity() {
             Spacer(Modifier.width(8.dp)); Surface(color = Ink.copy(alpha=.72f), shape = RoundedCornerShape(18.dp)) { Text(mode.title, color = Color.White, modifier = Modifier.padding(horizontal=15.dp, vertical=10.dp), fontWeight = FontWeight.SemiBold) }
         }
         Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(14.dp)) {
-            ResultPanel(mode, points, correction, unit, knownText, { knownText = it }, onApplyCalibration = {
+            ResultPanel(mode, points, correction, unit, knownText, { knownText = it }, proximityMeters, onApplyCalibration = {
                 val known = knownText.replace(',', '.').toDoubleOrNull()
-                if (known != null && known > 0 && points.size >= 2) correction = known / distance(points[0], points[1])
+                if (known != null && known > 0 && points.size >= 2) {
+                    val knownMeters = toMeters(known, unit)
+                    correctionChange(knownMeters / distance(points[0], points[1]))
+                    message = "Calibración guardada"
+                }
             })
             Spacer(Modifier.height(10.dp))
             Surface(color = Ink.copy(alpha=.88f), shape = RoundedCornerShape(25.dp)) {
                 Column(Modifier.padding(15.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(message, color = Color.White.copy(alpha=.78f), fontSize = 12.sp)
+                    ProximityStatus(proximityMeters)
+                    Spacer(Modifier.height(4.dp))
+                    Text(message, color = Color.White.copy(alpha=.72f), fontSize = 12.sp, maxLines = 1)
                     Spacer(Modifier.height(10.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = { points = emptyList(); correction = 1.0 }, colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)) { Icon(Icons.Outlined.RestartAlt, null); Spacer(Modifier.width(5.dp)); Text("Reiniciar") }
-                        Spacer(Modifier.width(14.dp))
+                        FilledIconButton(onClick = { points = emptyList() }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White.copy(alpha=.14f), contentColor = Color.White)) { Icon(Icons.Outlined.RestartAlt, "Reiniciar") }
+                        Spacer(Modifier.width(10.dp))
                         Button(onClick = {
                             val f = frame ?: return@Button
                             val display = context.resources.displayMetrics
@@ -137,8 +175,8 @@ class MainActivity : ComponentActivity() {
                                 points = (if (points.size >= limit) emptyList() else points) + hit.hitPose.point()
                                 message = if (points.size + 1 >= limit) "Medición lista" else "Punto ${('A'.code + points.size).toChar()} guardado"
                             }
-                        }, colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink), modifier = Modifier.height(52.dp)) {
-                            Icon(Icons.Outlined.AddLocationAlt, null); Spacer(Modifier.width(7.dp)); Text("Marcar punto", fontWeight = FontWeight.Bold)
+                        }, colors = ButtonDefaults.buttonColors(containerColor = Mint, contentColor = Ink), modifier = Modifier.weight(1f).height(52.dp)) {
+                            Icon(Icons.Outlined.AddLocationAlt, null); Spacer(Modifier.width(7.dp)); Text("Marcar", fontWeight = FontWeight.Bold)
                         }
                         if (mode == MeasureMode.AREA && points.size >= 3) { Spacer(Modifier.width(8.dp)); FilledIconButton(onClick = { message = "Área cerrada" }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color.White)) { Icon(Icons.Outlined.Check, null, tint = Ink) } }
                     }
@@ -148,20 +186,23 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun ResultPanel(mode: MeasureMode, points: List<Point3>, correction: Double, unit: MeasureUnit, knownText: String, knownChange: (String)->Unit, onApplyCalibration: ()->Unit) {
-    if (points.isEmpty()) return
-    Surface(color = Color.White, shape = RoundedCornerShape(23.dp), shadowElevation = 8.dp) {
+@Composable private fun ResultPanel(mode: MeasureMode, points: List<Point3>, correction: Double, unit: MeasureUnit, knownText: String, knownChange: (String)->Unit, proximityMeters: Double?, onApplyCalibration: ()->Unit) {
+    Surface(color = Color.White.copy(alpha=.96f), shape = RoundedCornerShape(24.dp), shadowElevation = 5.dp) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("${points.size} punto${if(points.size==1)"" else "s"}", fontSize=12.sp, color=Color.Gray)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(mode.title.uppercase(), fontSize=10.sp, fontWeight=FontWeight.Bold, color=Slate)
+                Spacer(Modifier.weight(1f))
+                proximityMeters?.let { Text("%.2f m de distancia".format(it), fontSize=11.sp, color=Slate) }
+            }
             when (mode) {
-                MeasureMode.DISTANCE -> BigValue(if(points.size<2) "Marca B" else formatLength(distance(points[0], points[1]) * correction, unit))
+                MeasureMode.DISTANCE -> BigValue(if(points.size<1) "Marca el punto A" else if(points.size<2) "Marca el punto B" else formatLength(distance(points[0], points[1]) * correction, unit))
                 MeasureMode.RECTANGLE -> if(points.size<2) BigValue("Marca la esquina opuesta") else {
                     val (w,h,a)=rectangleMetrics(points[0],points[1]); BigValue(formatArea(a*correction*correction, unit)); Text("Ancho ${formatLength(w*correction,unit)}  ·  Alto ${formatLength(h*correction,unit)}", color=Color.Gray)
                 }
                 MeasureMode.AREA -> { BigValue(if(points.size<3) "Faltan ${3-points.size} puntos" else formatArea(polygonArea(points)*correction*correction,unit)); if(points.size>=2) Text("Perímetro ${formatLength(perimeter(points, points.size>=3)*correction,unit)}", color=Color.Gray) }
                 MeasureMode.CALIBRATE -> {
                     BigValue(if(points.size<2) "Marca B" else "Medido ${formatLength(distance(points[0],points[1]),unit)}")
-                    Row(verticalAlignment=Alignment.CenterVertically) { OutlinedTextField(knownText, knownChange, label={Text("Distancia real (m)")}, singleLine=true, modifier=Modifier.weight(1f)); Spacer(Modifier.width(8.dp)); Button(onClick=onApplyCalibration, enabled=points.size>=2){Text("Aplicar")} }
+                    Row(verticalAlignment=Alignment.CenterVertically) { OutlinedTextField(knownText, knownChange, label={Text("Medida real (${unit.short})")}, singleLine=true, modifier=Modifier.weight(1f)); Spacer(Modifier.width(8.dp)); Button(onClick=onApplyCalibration, enabled=points.size>=2){Text("Guardar")} }
                 }
             }
         }
@@ -171,6 +212,21 @@ class MainActivity : ComponentActivity() {
 @Composable private fun BigValue(text: String) = Text(text, fontSize=25.sp, fontWeight=FontWeight.Bold, color=Ink)
 private fun formatLength(m: Double, unit: MeasureUnit): String { val v=when(unit){MeasureUnit.METERS->m;MeasureUnit.CENTIMETERS->m*100;MeasureUnit.FEET->m*3.280839895;MeasureUnit.INCHES->m*39.37007874}; return String.format(Locale.getDefault(),if(v<10)"%.2f %s" else "%.1f %s",v,unit.short) }
 private fun formatArea(m2:Double,unit:MeasureUnit):String { val v=when(unit){MeasureUnit.METERS->m2;MeasureUnit.CENTIMETERS->m2*10000;MeasureUnit.FEET->m2*10.7639104;MeasureUnit.INCHES->m2*1550.0031}; return String.format(Locale.getDefault(),"%.2f %s²",v,unit.short) }
+private fun toMeters(value: Double, unit: MeasureUnit): Double = when(unit) { MeasureUnit.METERS -> value; MeasureUnit.CENTIMETERS -> value / 100.0; MeasureUnit.FEET -> value / 3.280839895; MeasureUnit.INCHES -> value / 39.37007874 }
+
+@Composable private fun ProximityStatus(distance: Double?) {
+    val (label, color) = when {
+        distance == null -> "BUSCANDO SUPERFICIE" to Color(0xFFFFC857)
+        distance < .80 -> "ALÉJATE UN POCO" to Color(0xFFFFC857)
+        distance <= .95 -> "DISTANCIA ÓPTIMA" to Mint
+        else -> "ACÉRCATE AL OBJETO" to Color(0xFFFF8A80)
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(7.dp).background(color, CircleShape))
+        Spacer(Modifier.width(7.dp))
+        Text(label, color = color, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+    }
+}
 
 @Composable private fun Crosshair() { Canvas(Modifier.fillMaxSize()) { val c=center; drawCircle(Mint, 18.dp.toPx(), c, style=Stroke(2.dp.toPx())); drawLine(Mint,c-Offset(28.dp.toPx(),0f),c+Offset(28.dp.toPx(),0f),2.dp.toPx(),StrokeCap.Round); drawLine(Mint,c-Offset(0f,28.dp.toPx()),c+Offset(0f,28.dp.toPx()),2.dp.toPx(),StrokeCap.Round) } }
 
