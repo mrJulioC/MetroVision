@@ -15,7 +15,6 @@ android {
         versionName = "1.0.0"
     }
     buildFeatures { compose = true }
-    kotlinOptions { jvmTarget = "17" }
 }
 
 dependencies {
